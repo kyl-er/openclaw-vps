@@ -1,6 +1,6 @@
 import os, tempfile
 from flask import Flask, request, render_template_string
-import yt_dlp, openai
+import yt_dlp, whisper
 
 app = Flask(__name__)
 
@@ -41,13 +41,10 @@ def index():
                     ydl.download([url])
 
                 audio_path = f"{tmp}/audio.mp3"
-                client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-                with open(audio_path, "rb") as f:
-                    result = client.audio.transcriptions.create(
-                        model="whisper-1", file=f, response_format="text"
-                    )
+                model = whisper.load_model("base")
+                result = model.transcribe(audio_path)
 
-            transcript = f"## Transcript\n\n{result}"
+            transcript = f"## Transcript\n\n{result['text'].strip()}"
         except Exception as e:
             error = str(e)
 
