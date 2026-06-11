@@ -1,6 +1,7 @@
-import os, tempfile, glob as glob_mod
+import os, re, tempfile
 from flask import Flask, request, render_template_string
 import yt_dlp, whisper
+from youtube_transcript_api import YouTubeTranscriptApi
 
 app = Flask(__name__)
 
@@ -22,41 +23,16 @@ pre{white-space:pre-wrap;background:#f4f4f4;padding:12px}
 {% if error %}<p class=err>{{ error }}</p>{% endif %}
 </body></html>"""
 
-
-def _fetch_subtitles(url, tmp):
-    """Try to pull auto-generated or manual captions via yt-dlp. Returns text or None."""
-    ydl_opts = {
-        "skip_download": True,
-        "writeautomaticsub": True,
-        "writesubtitles": True,
-        "subtitleslangs": ["en", "en-US", "en-GB"],
-        "subtitlesformat": "vtt",
-        "outtmpl": f"{tmp}/sub",
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-
-    vtt_files = glob_mod.glob(f"{tmp}/*.vtt")
-    if not vtt_files:
-        return None
-
-    lines, prev = [], ""
-    for line in open(vtt_files[0], encoding="utf-8"):
-        line = line.strip()
-        if (not line or line.startswith("WEBVTT") or line.startswith("NOTE")
-                or "-->" in line or line[0].isdigit()):
-            continue
-        if line != prev:
-            lines.append(line)
-            prev = line
-    return " ".join(lines) if lines else None
+YT_RE = re.compile(r'(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})')
 
 
-def _transcribe_audio(url, tmp):
-    """Download audio and run local Whisper. Returns (text, duration_s)."""
+def _youtube_transcript(video_id):
+    api = YouTubeTranscriptApi()
+    segments = api.fetch(video_id)
+    return " ".join(seg.text for seg in segments)
+
+
+def _whisper_transcribe(url, tmp):
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": f"{tmp}/audio.%(ext)s",
@@ -66,12 +42,10 @@ def _transcribe_audio(url, tmp):
         "nocheckcertificate": True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        duration = info.get("duration", 0)
-
+        ydl.download([url])
     model = whisper.load_model("base")
     result = model.transcribe(f"{tmp}/audio.mp3")
-    return result["text"].strip(), duration
+    return result["text"].strip()
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -80,15 +54,14 @@ def index():
     if request.method == "POST":
         url = request.form["url"].strip()
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                text = _fetch_subtitles(url, tmp)
-                if text:
-                    src = "auto-generated captions"
-                    transcript = text
-                else:
-                    text, _ = _transcribe_audio(url, tmp)
-                    src = "Whisper (local)"
-                    transcript = text
+            yt_match = YT_RE.search(url)
+            if yt_match:
+                transcript = _youtube_transcript(yt_match.group(1))
+                src = "YouTube transcript API"
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    transcript = _whisper_transcribe(url, tmp)
+                src = "Whisper (local)"
         except Exception as e:
             error = str(e)
 
